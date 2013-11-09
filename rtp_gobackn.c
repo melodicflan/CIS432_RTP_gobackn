@@ -56,7 +56,6 @@ int base;
 int nextseqnum;
 int freeindex;
 struct pkt buffer[BUFFER_SIZE];
-
 float sampleRTT;
 float currTime;
 float estimatedRTT;
@@ -125,7 +124,7 @@ A_buffer_msg(const struct msg message) {
     } else {
         //mod index to bring index 50 to 0 again
         freeindex = freeindex % BUFFER_SIZE;
-        
+
         //this slot is no longer free
         buffer[freeindex].seqnum = 0;
 
@@ -185,60 +184,69 @@ struct pkt packet;
                 printf("    -- packet contains a NACK. Wait for retransmission\n");
             }
         } else if (packet.acknum == packet.seqnum) {
-            
             //because we're using ACKs and NACKs, if ACK, the packet.seqnum == packet.acknum
 
             if (TRACE == 2) {
                 printf("    ** packet contains an ACK%d\n", packet.acknum);
             }
 
-            //"free" the buffers from base up to acknum
-            //following lines used to round back to 0 if necessary
-            int indexer = base;
-            do {
-                buffer[indexer].seqnum = -1; //-1 means this slot is free
+            //check if buffer had been freed by this acknum (duplicate ack check) 
+            if (buffer[packet.acknum].seqnum == -1) {
+                //this means this packet has already been freed
                 if (TRACE == 2) {
-                    printf("    ** freed buffer[%d]\n", indexer);
+                    printf("    -- duplicate ACK%d. Wait for retransmission\n", packet.acknum);
                 }
-
-                if (indexer == packet.acknum) {
-                    break;
-                }
-                indexer = add_one(indexer);
-            } while (indexer != packet.acknum);
-
-
-            //cumulative ack
-            int tmp = base;
-            base = add_one(packet.acknum); 
-            if (TRACE == 2) {
-                printf("    *- (old base: %d | new base: %d)\n", tmp, base);
-            }
-
-            //check timer
-            if (base == nextseqnum) {
-                //stop the timer
-                stoptimer(0);
-
-                //get and calculate the timeoutinterval
-                sampleRTT = simtime - currTime;
-                A_calc_timeout();
             } else {
-                //stop the timer
-                stoptimer(0);
-                //get and calculate the timeoutinterval
-                sampleRTT = simtime - currTime;
-                A_calc_timeout();
+                //"free" the buffers from base up to acknum
+                //following lines used to round back to 0 if necessary
+                int indexer = base;
+                do {
+                    buffer[indexer].seqnum = -1; //-1 means this slot is free
+                    if (TRACE == 2) {
+                        printf("    ** freed buffer[%d]\n", indexer);
+                    }
 
-                //save current time (used for calculating timeoutInterval later)
-                currTime = simtime;
+                    if (indexer == packet.acknum) {
+                        break;
+                    }
+                    indexer = add_one(indexer);
+                } while (indexer != packet.acknum);
 
-                //start timer
-                starttimer(0, timeoutInterval);
+
+                //cumulative ack
+                int tmp = base;
+                base = add_one(packet.acknum);
+                if (TRACE == 2) {
+                    printf("    *- (old base: %d | new base: %d)\n", tmp, base);
+                }
+
+                //check timer
+                if (base == nextseqnum) {
+                    //stop the timer
+                    stoptimer(0);
+
+                    //get and calculate the timeoutinterval
+                    sampleRTT = simtime - currTime;
+                    A_calc_timeout();
+                } else {
+                    //stop the timer
+                    stoptimer(0);
+                    //get and calculate the timeoutinterval
+                    sampleRTT = simtime - currTime;
+                    A_calc_timeout();
+
+                    //save current time (used for calculating timeoutInterval later)
+                    currTime = simtime;
+
+                    //start timer
+                    starttimer(0, timeoutInterval);
+                }
             }
         } else {
             if (TRACE == 2) {
                 printf("    -- ERROR IN CODE\n");
+                printf("    -- packet contains an seqnum%d\n", packet.seqnum);
+                printf("    -- packet contains an ACK%d\n", packet.acknum);
                 exit(0);
             }
         }
@@ -286,6 +294,7 @@ A_timerinterrupt() {
 
 /* entity A routines are called. You can use it to do any initialization */
 A_init() {
+
     //init window
     windowsize = 8;
     base = 0;
@@ -355,8 +364,14 @@ struct pkt packet;
 
         } else {
             //maybe packet arrived out of order or expected packet got lost
+            //have to remake packet bc a NACK could've changed the packet
+            //resend last in order ACK
+            bPkt.seqnum = expectedseqnum - 1;
+            bPkt.acknum = expectedseqnum - 1;
+            bPkt.checksum = calc_checksum(bPkt);
+
             if (TRACE == 2) {
-                printf("    -- 'B' re-sending ACK%d to layer3\n", bPkt.acknum);
+                printf("    -- 'B' received seqnum%d, re-ACK%d to layer3\n", packet.seqnum, bPkt.acknum);
             }
             tolayer3(1, bPkt);
         }
@@ -364,9 +379,6 @@ struct pkt packet;
     } else {
         if (TRACE == 2) {
             printf("    -- packet received is corrupted\n");
-            
-            //makes sure we don't send an NACK but re-send the right ACK
-            int tmp = bPkt.acknum;
 
             //send NACK
             bPkt.seqnum = expectedseqnum;
@@ -376,9 +388,6 @@ struct pkt packet;
                 printf("    -- 'B' sending NACK to layer3\n");
             }
             tolayer3(1, bPkt);
-            
-            //save back the acknum
-            bPkt.acknum = tmp;
         }
     }
 }
