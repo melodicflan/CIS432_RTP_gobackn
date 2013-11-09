@@ -88,7 +88,7 @@ struct msg message;
 
         //send pkt
         if (TRACE == 2) {
-            printf("    ** 'A' sends made packet: %d to layer3\n", nextseqnum);
+            printf("    ** 'A' sends made packet%d to layer3\n", nextseqnum);
         }
         tolayer3(0, buffer[nextseqnum]);
 
@@ -115,7 +115,7 @@ struct msg message;
 A_buffer_msg(const struct msg message) {
     //max index = 49, seqnum = -1 means the buffer slot is free
 
-    if (freeindex == BUFFER_SIZE - 1 && buffer[0].seqnum != -1) {
+    if (freeindex == BUFFER_SIZE && buffer[0].seqnum != -1) {
         //buffer is full
         if (TRACE == 2) {
             printf("    -- 'A' buffer is full\n");
@@ -123,6 +123,9 @@ A_buffer_msg(const struct msg message) {
         }
         exit(0);
     } else {
+        //mod index to bring index 50 to 0 again
+        freeindex = freeindex % BUFFER_SIZE;
+        
         //this slot is no longer free
         buffer[freeindex].seqnum = 0;
 
@@ -133,11 +136,11 @@ A_buffer_msg(const struct msg message) {
         }
 
         if (TRACE == 2) {
-            printf("    ** buffer placed msg into slot: %d\n", freeindex);
+            printf("    ** msg placed in buffer[%d]\n", freeindex);
         }
 
-        //update free buffer slot (max buffer size is 50, so 49 is the last index)
-        freeindex = add_one(freeindex);
+        //update free buffer slot. do not use mod. easier to check if statement if mod later
+        freeindex++;
     }
 }
 
@@ -182,10 +185,11 @@ struct pkt packet;
                 printf("    -- packet contains a NACK. Wait for retransmission\n");
             }
         } else if (packet.acknum == packet.seqnum) {
+            
             //because we're using ACKs and NACKs, if ACK, the packet.seqnum == packet.acknum
 
             if (TRACE == 2) {
-                printf("    ** packet contains an ACK: %d\n", packet.acknum);
+                printf("    ** packet contains an ACK%d\n", packet.acknum);
             }
 
             //"free" the buffers from base up to acknum
@@ -194,7 +198,7 @@ struct pkt packet;
             do {
                 buffer[indexer].seqnum = -1; //-1 means this slot is free
                 if (TRACE == 2) {
-                    printf("    ** freed buffer slot: %d\n", indexer);
+                    printf("    ** freed buffer[%d]\n", indexer);
                 }
 
                 if (indexer == packet.acknum) {
@@ -206,10 +210,12 @@ struct pkt packet;
 
             //cumulative ack
             int tmp = base;
-            base = add_one(packet.acknum);
+            base = add_one(packet.acknum); 
             if (TRACE == 2) {
-                printf("    *- old base: %d | new base: %d\n", tmp, base);
+                printf("    *- (old base: %d | new base: %d)\n", tmp, base);
             }
+
+            //check timer
             if (base == nextseqnum) {
                 //stop the timer
                 stoptimer(0);
@@ -218,6 +224,12 @@ struct pkt packet;
                 sampleRTT = simtime - currTime;
                 A_calc_timeout();
             } else {
+                //stop the timer
+                stoptimer(0);
+                //get and calculate the timeoutinterval
+                sampleRTT = simtime - currTime;
+                A_calc_timeout();
+
                 //save current time (used for calculating timeoutInterval later)
                 currTime = simtime;
 
@@ -259,7 +271,7 @@ A_timerinterrupt() {
     int indexer = base;
     do {
         if (TRACE == 2) {
-            printf("    -- 'A' resending packet: %d to layer3\n", indexer);
+            printf("    -- 'A' resending packet%d to layer3\n", indexer);
         }
         tolayer3(0, buffer[indexer]);
 
@@ -325,7 +337,7 @@ struct pkt packet;
             if (TRACE == 2) {
                 printf("    ** 'B' sending msg to layer5\n");
                 //used to see how often is 'A' busy
-                //printf("    *- (# msgs to layer5 thus far: %d/%d)\n",pkg_success,pkg_arrival);
+                printf("    *- (# msgs to layer5 thus far: %d/%d)\n", pkg_success, pkg_arrival);
             }
             tolayer5(1, packet.payload);
 
@@ -334,7 +346,7 @@ struct pkt packet;
             bPkt.acknum = expectedseqnum;
             bPkt.checksum = calc_checksum(bPkt);
             if (TRACE == 2) {
-                printf("    ** 'B' sending ACK: %d to layer3\n", bPkt.acknum);
+                printf("    ** 'B' sending ACK%d to layer3\n", bPkt.acknum);
             }
             tolayer3(1, bPkt);
 
@@ -344,7 +356,7 @@ struct pkt packet;
         } else {
             //maybe packet arrived out of order or expected packet got lost
             if (TRACE == 2) {
-                printf("    -- 'B' sending expected seqnum: %d to layer3\n", bPkt.seqnum);
+                printf("    -- 'B' re-sending ACK%d to layer3\n", bPkt.acknum);
             }
             tolayer3(1, bPkt);
         }
@@ -352,6 +364,9 @@ struct pkt packet;
     } else {
         if (TRACE == 2) {
             printf("    -- packet received is corrupted\n");
+            
+            //makes sure we don't send an NACK but re-send the right ACK
+            int tmp = bPkt.acknum;
 
             //send NACK
             bPkt.seqnum = expectedseqnum;
@@ -361,6 +376,9 @@ struct pkt packet;
                 printf("    -- 'B' sending NACK to layer3\n");
             }
             tolayer3(1, bPkt);
+            
+            //save back the acknum
+            bPkt.acknum = tmp;
         }
     }
 }
@@ -385,6 +403,7 @@ B_init() {
     }
     bPkt.checksum = calc_checksum(bPkt);
 }
+
 /* Helper method to increment input by 1 based on buffer_size*/
 int add_one(const int x) {
     int tmp = (x + 1) % BUFFER_SIZE;
