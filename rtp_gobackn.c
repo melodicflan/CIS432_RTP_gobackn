@@ -64,6 +64,7 @@ float timeoutInterval;
 
 /* Global Variables for B*/
 int expectedseqnum;
+int lastInOrder;
 struct pkt bPkt; //packet used for sending reply back to 'A'
 
 /* called from layer 5, passed the data to be sent to other side */
@@ -177,6 +178,7 @@ struct pkt packet;
     if (packet.checksum == tmpChecksum) {
         if (TRACE == 2) {
             printf("    ** packet received is not corrupted\n");
+            printf("    ** 'A' expects at least base seqnum%d\n", base);
         }
 
         if (packet.acknum == NACK) {
@@ -200,7 +202,7 @@ struct pkt packet;
                 //"free" the buffers from base up to acknum
                 //following lines used to round back to 0 if necessary
                 int indexer = base;
-                do {
+                while(1) {
                     buffer[indexer].seqnum = -1; //-1 means this slot is free
                     if (TRACE == 2) {
                         printf("    ** freed buffer[%d]\n", indexer);
@@ -210,9 +212,7 @@ struct pkt packet;
                         break;
                     }
                     indexer = add_one(indexer);
-                } while (indexer != packet.acknum);
-
-
+                }
                 //cumulative ack
                 int tmp = base;
                 base = add_one(packet.acknum);
@@ -220,21 +220,15 @@ struct pkt packet;
                     printf("    *- (old base: %d | new base: %d)\n", tmp, base);
                 }
 
+                //stop the timer
+                stoptimer(0);
+
+                //get and calculate the timeoutinterval
+                sampleRTT = simtime - currTime;
+                A_calc_timeout();
+
                 //check timer
-                if (base == nextseqnum) {
-                    //stop the timer
-                    stoptimer(0);
-
-                    //get and calculate the timeoutinterval
-                    sampleRTT = simtime - currTime;
-                    A_calc_timeout();
-                } else {
-                    //stop the timer
-                    stoptimer(0);
-                    //get and calculate the timeoutinterval
-                    sampleRTT = simtime - currTime;
-                    A_calc_timeout();
-
+                if (base != nextseqnum) {
                     //save current time (used for calculating timeoutInterval later)
                     currTime = simtime;
 
@@ -245,8 +239,7 @@ struct pkt packet;
         } else {
             if (TRACE == 2) {
                 printf("    -- ERROR IN CODE\n");
-                printf("    -- packet contains an seqnum%d\n", packet.seqnum);
-                printf("    -- packet contains an ACK%d\n", packet.acknum);
+                printf("    -- packet seqnum%d and ACK%d mismatch\n", packet.seqnum, packet.acknum);
                 exit(0);
             }
         }
@@ -274,7 +267,7 @@ A_timerinterrupt() {
     //resend pkts from [base...seqnum-1]
     //following lines used to round back to 0 if necessary
     if (TRACE == 2) {
-        printf("    -- 'A' resending packets[%d...%d] layer3\n", base, nextseqnum - 1);
+        printf("    -- 'A' resending packets[%d...%d] to layer3\n", base, nextseqnum - 1);
     }
     int indexer = base;
     do {
@@ -336,6 +329,7 @@ struct pkt packet;
     if (packet.checksum == tmpChecksum) {
         if (TRACE == 2) {
             printf("    ** packet received is not corrupt\n");
+            printf("    ** 'B' expects seqnum%d, received seqnum%d\n", expectedseqnum, packet.seqnum);
         }
 
         //check expected seqnum against seqnum in packet
@@ -346,7 +340,7 @@ struct pkt packet;
             if (TRACE == 2) {
                 printf("    ** 'B' sending msg to layer5\n");
                 //used to see how often is 'A' busy
-                printf("    *- (# msgs to layer5 thus far: %d/%d)\n", pkg_success, pkg_arrival);
+                //printf("    *- (# msgs to layer5 thus far: %d/%d)\n", pkg_success, pkg_arrival);
             }
             tolayer5(1, packet.payload);
 
@@ -358,6 +352,9 @@ struct pkt packet;
                 printf("    ** 'B' sending ACK%d to layer3\n", bPkt.acknum);
             }
             tolayer3(1, bPkt);
+            
+            //update lastInOrder ACK
+            lastInOrder = expectedseqnum;
 
             //update expected seq number (max buffer size is 50, so 49 is the last index)
             expectedseqnum = add_one(expectedseqnum);
@@ -366,12 +363,12 @@ struct pkt packet;
             //maybe packet arrived out of order or expected packet got lost
             //have to remake packet bc a NACK could've changed the packet
             //resend last in order ACK
-            bPkt.seqnum = expectedseqnum - 1;
-            bPkt.acknum = expectedseqnum - 1;
+            bPkt.seqnum = lastInOrder;
+            bPkt.acknum = lastInOrder;
             bPkt.checksum = calc_checksum(bPkt);
 
             if (TRACE == 2) {
-                printf("    -- 'B' received seqnum%d, re-ACK%d to layer3\n", packet.seqnum, bPkt.acknum);
+                printf("    -- 'B' resending ACK%d to layer3\n", bPkt.acknum);
             }
             tolayer3(1, bPkt);
         }
@@ -381,7 +378,6 @@ struct pkt packet;
             printf("    -- packet received is corrupted\n");
 
             //send NACK
-            bPkt.seqnum = expectedseqnum;
             bPkt.acknum = NACK;
             bPkt.checksum = calc_checksum(bPkt);
             if (TRACE == 2) {
@@ -402,6 +398,7 @@ B_timerinterrupt() {
 B_init() {
     //init
     expectedseqnum = 0;
+    lastInOrder = 0;
 
     //init standard return-to-A packet
     bPkt.seqnum = expectedseqnum;
