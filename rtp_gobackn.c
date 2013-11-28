@@ -60,6 +60,7 @@ float sampleRTT;
 float currTime;
 float estimatedRTT;
 float devRTT;
+int recordtimeOn; //timeoutInterval flag. don't calculate if the pkt is a re-transmission
 float timeoutInterval;
 
 /* Global Variables for B*/
@@ -95,9 +96,11 @@ struct msg message;
         if (base == nextseqnum) {
             //save current time (used for calculating timeoutInterval later)
             currTime = simtime;
-
+            recordtimeOn = 1;
+            
             //start timer
             starttimer(0, timeoutInterval);
+
         }
 
         //update nextseqnum (max buffer size is 50, so 49 is the last index)
@@ -146,16 +149,14 @@ A_buffer_msg(const struct msg message) {
 
 /* Helper method to calculate timeout*/
 A_calc_timeout() {
-    float alpha = 0.125;
-    estimatedRTT = (1 - alpha) * estimatedRTT + alpha*sampleRTT;
+    if (recordtimeOn) {
+        float alpha = 0.125;
+        estimatedRTT = (1 - alpha) * estimatedRTT + alpha*sampleRTT;
 
-    float beta = 0.25;
-    devRTT = (1 - beta) * devRTT + beta * fabsf(sampleRTT - estimatedRTT); //fabsf = absolute value of
+        float beta = 0.25;
+        devRTT = (1 - beta) * devRTT + beta * fabsf(sampleRTT - estimatedRTT); //fabsf = absolute value of
 
-    timeoutInterval = estimatedRTT + 4 * devRTT;
-
-    if (TRACE == 2) {
-        printf("    *- (New timeoutInterval: %f)\n", timeoutInterval);
+        timeoutInterval = estimatedRTT + 4 * devRTT;
     }
 }
 
@@ -202,7 +203,7 @@ struct pkt packet;
                 //"free" the buffers from base up to acknum
                 //following lines used to round back to 0 if necessary
                 int indexer = base;
-                while(1) {
+                while (1) {
                     buffer[indexer].seqnum = -1; //-1 means this slot is free
                     if (TRACE == 2) {
                         printf("    ** freed buffer[%d]\n", indexer);
@@ -226,6 +227,12 @@ struct pkt packet;
                 //get and calculate the timeoutinterval
                 sampleRTT = simtime - currTime;
                 A_calc_timeout();
+
+                if (TRACE == 2 && recordtimeOn) {
+                    printf("    *- (New timeoutInterval: %f)\n", timeoutInterval);
+                } else {
+                    printf("    *- (No new timeoutInterval)\n");
+                }
 
                 //check timer
                 if (base != nextseqnum) {
@@ -258,8 +265,8 @@ A_timerinterrupt() {
         printf("    -- 'A' timed out\n");
     }
 
-    //save current time (used for calculating timeoutInterval later)
-    currTime = simtime;
+    //do not calculate the timeoutinterval if this is a retransmission
+    recordtimeOn = 0;
 
     //start timer
     starttimer(0, timeoutInterval);
@@ -270,7 +277,7 @@ A_timerinterrupt() {
         printf("    -- 'A' resending packets[%d...%d] to layer3\n", base, nextseqnum - 1);
     }
     int indexer = base;
-    do {
+    while (1) {
         if (TRACE == 2) {
             printf("    -- 'A' resending packet%d to layer3\n", indexer);
         }
@@ -280,7 +287,7 @@ A_timerinterrupt() {
             break;
         }
         indexer = add_one(indexer);
-    } while (indexer != nextseqnum);
+    }
 }
 
 /* the following routine will be called once (only) before any other */
@@ -311,6 +318,7 @@ A_init() {
     currTime = 0;
     estimatedRTT = 0;
     devRTT = 0;
+    recordtimeOn = 1;
     timeoutInterval = 20;
 }
 
@@ -352,7 +360,7 @@ struct pkt packet;
                 printf("    ** 'B' sending ACK%d to layer3\n", bPkt.acknum);
             }
             tolayer3(1, bPkt);
-            
+
             //update lastInOrder ACK
             lastInOrder = expectedseqnum;
 
